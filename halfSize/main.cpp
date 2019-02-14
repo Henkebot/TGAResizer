@@ -13,7 +13,6 @@ http://www.paulbourke.net/dataformats/tga/
 #include <fstream>
 #include <iostream>
 
-
 #pragma region TGA
 #pragma pack(push, 1)
 struct TGA_Header
@@ -36,8 +35,17 @@ struct TGA_Header
 static_assert(sizeof(TGA_Header) == 18, "TGA Header must be 18 byte aligned");
 
 static bool GetTGAHeader(std::ifstream& _file, TGA_Header* _header);
+
+#pragma endregion
+
+#pragma region IO
+
 static bool GetImageDataRaw(std::ifstream& _file, BYTE* _data, size_t _sizeInBytes);
 static bool GetImageDataRLE(std::ifstream& _file, BYTE* _data, char _BytesPerPixel);
+
+static bool WriteRAWToFile(std::ofstream& _file, BYTE* _data, size_t _sizeInBytes);
+static bool WriteRLEToFile(std::ofstream& _file, BYTE* _data, size_t _sizeInBytes, char _bpp);
+
 #pragma endregion
 
 #pragma region Resizing
@@ -57,89 +65,116 @@ int main(int argc, char** argv)
 {
 	if(argc < 3)
 	{
-		//TODO(Henrik): Print usage
+		printf_s("Usage: input.tga output.tga\n");
+		return 0;
 	}
+
 	printf_s("Reading \"%s\"...\n", argv[1]);
 	std::ifstream in(argv[1], std::ios::binary);
 	if(false == in.is_open())
 	{
-		//TODO(Henrik): Print error
+		fprintf_s(stderr, "Failed to open \"%s\"\n", argv[1]);
 		return 1;
 	}
 
-	TGA_Header header;
+	TGA_Header inHeader;
 
-	if (false == GetTGAHeader(in, &header))
+	if(false == GetTGAHeader(in, &inHeader))
 	{
-		//TODO(Henrik): Print error
+		fprintf_s(stderr, "Failed to read TGA header from \"%s\"\n", argv[1]);
+		return 1;
 	}
 
-	short width  = header.width;
-	short height = header.height;
-	char bpp	 = header.bitsperpixel >> 3; // Convert to BytesPerPixel instead
+	short inWidth	  = inHeader.width;
+	short inHeight	 = inHeader.height;
+	char bytesPerPixel = inHeader.bitsperpixel >> 3; // Convert to BytesPerPixel instead
 
-	short nWidth  = width >> 1;
-	short nHeight = height >> 1;
+	short outWidth  = inWidth >> 1;
+	short outHeight = inHeight >> 1;
 
-	unsigned long InputDataSize = bpp * width * height;
-	unsigned long OutputDataSize   = bpp * nWidth * nHeight;
+	unsigned long InputDataSize  = bytesPerPixel * inWidth * inHeight;
+	unsigned long OutputDataSize = bytesPerPixel * outWidth * outHeight;
 
+	// Allocate all needed memory at once
 	BYTE* TotalData = new BYTE[InputDataSize + OutputDataSize];
 
-	BYTE* InputData = TotalData;
+	BYTE* inData = TotalData;
 
-	switch(header.datatypecode)
+	switch(inHeader.datatypecode)
 	{
 	case 2: // 24 Bit
 	case 3: // 32 Bit
-		if (false == GetImageDataRaw(in, InputData, InputDataSize))
+		if(false == GetImageDataRaw(in, inData, InputDataSize))
 		{
-			//TODO(Henrik): Print error
+			delete[] TotalData;
+			fprintf_s(stderr, "Failed to read raw image data from \"%s\"\n", argv[1]);
 			return 1;
 		}
 		break;
 	case 10: // RLE Compression
-		if (false == GetImageDataRLE(in, InputData, bpp))
+		if(false == GetImageDataRLE(in, inData, bytesPerPixel))
 		{
-			//TODO(Henrik): Print error
+			delete[] TotalData;
+			fprintf_s(stderr, "Failed to read RLE image data from \"%s\"\n", argv[1]);
 			return 1;
 		}
 		break;
 	default:
-		//TODO(Henrik): Print error
+		delete[] TotalData;
+		fprintf_s(stderr, "Unsupported image format\n");
 		return 1;
 	}
 
 	in.close();
-	printf("Done.\n");
-	printf("Original size: %ix%i\n", width, height);
+	printf_s("Done.\n");
 
-	printf("Resizing to: %ix%i\n", nWidth, nHeight);
+	printf_s("Original size: %ix%i\n", inWidth, inHeight);
+	printf_s("Resizing to: %ix%i\n", outWidth, outHeight);
 
-	BYTE* newData = &TotalData[InputDataSize];
+	BYTE* outData = &TotalData[InputDataSize];
 
-	ResizeImage(newData, nWidth, nHeight, InputData, width, height, bpp);
+	ResizeImage(outData, outWidth, outHeight, inData, inWidth, inHeight, bytesPerPixel);
 
-	printf("Done.\n");
+	printf_s("Done.\n");
 
-	printf("Saving \"%s\"...\n", argv[2]);
+	printf_s("Saving \"%s\"...\n", argv[2]);
 	std::ofstream output(argv[2], std::ios::binary);
-	TGA_Header oHeader = {};
+	TGA_Header outHeader = {};
 
-	oHeader.bitsperpixel	= header.bitsperpixel;
-	oHeader.width			= nWidth;
-	oHeader.height			= nHeight;
-	oHeader.datatypecode	= 2;
-	oHeader.imagedescriptor = 0; // flip horizontally
+	outHeader.bitsperpixel = inHeader.bitsperpixel;
+	outHeader.width		   = outWidth;
+	outHeader.height	   = outHeight;
+	outHeader.datatypecode = inHeader.datatypecode;
 
-	output.write(reinterpret_cast<char*>(&oHeader), sizeof(header));
-	output.write(reinterpret_cast<char*>(newData), OutputDataSize);
-	printf("Done.\n");
+	output.write(reinterpret_cast<char*>(&outHeader), sizeof(inHeader));
+
+	switch(outHeader.datatypecode)
+	{
+	case 2:
+	case 3:
+		if(false == WriteRAWToFile(output, outData, OutputDataSize))
+		{
+			delete[] TotalData;
+			fprintf_s(stderr, "Failed to write raw image to file\n");
+			return 1;
+		}
+		break;
+	case 10:
+		if(false == WriteRLEToFile(output, outData, OutputDataSize, bytesPerPixel))
+		{
+			delete[] TotalData;
+			fprintf_s(stderr, "Failed to write RLE image to file\n");
+			return 1;
+		}
+		break;
+	default: // This cant be reached, better tell the compiler!
+		__assume(0);
+	}
 	output.close();
 
-	delete[] TotalData;
+	printf_s("Done.\n");
 
-	system("pause");
+	delete[] TotalData;
 	return 0;
 }
 
@@ -153,27 +188,27 @@ void ResizeImage(BYTE* outData,
 {
 	// Resizing with no filtering
 	ScopedTimer timer("Billinear filtering");
-	for(int j = 0; j < _outHeight; j++)
+	for(int y = 0; y < _outHeight; y++)
 	{
-		float gy = j / float(_outHeight); // be careful to interpolate boundaries
-		for(int i = 0; i < _outWidth; i++)
+		float normY = y / float(_outHeight);
+		for(int x = 0; x < _outWidth; x++)
 		{
 
-			float gx = i / float(_outWidth); // be careful to interpolate boundaries
+			float normX = x / float(_outWidth);
 			for(int channel = 0; channel < bpp; channel++)
 			{
-				*outData++ =
-					/*outData[((i + (j * _outWidth)) * bpp) + channel] =*/
-					BilinearFilteredAtChannel(inData, _inWidth, _inHeight, bpp, channel, gx, gy);
+				*outData++ = BilinearFilteredAtChannel(
+					inData, _inWidth, _inHeight, bpp, channel, normX, normY);
 			}
 		}
 	}
 }
-
+// Taken from https://en.wikipedia.org/wiki/Bilinear_filtering
 BYTE BilinearFilteredAtChannel(
 	BYTE* tex, int texSizeX, int texSizeY, int bpp, int channel, double u, double v)
 {
-	u = max(0, u * texSizeX - 0.5);
+
+	u = min(max(u * texSizeX - 0.5, 0), texSizeX);
 	v = max(0, v * texSizeY - 0.5);
 
 	int x = static_cast<int>(u);
@@ -210,7 +245,7 @@ bool GetImageDataRaw(std::ifstream& _file, BYTE* _data, size_t _sizeInBytes)
 
 bool GetImageDataRLE(std::ifstream& _file, BYTE* _data, char _BytesPerPixel)
 {
-	while(_file)
+	while(false == _file.eof())
 	{
 		char temp[5];
 		_file.read(temp, _BytesPerPixel + 1);
@@ -241,6 +276,68 @@ bool GetImageDataRLE(std::ifstream& _file, BYTE* _data, char _BytesPerPixel)
 					*_data++ = temp[u];
 				}
 			}
+		}
+	}
+	return true;
+}
+
+bool WriteRAWToFile(std::ofstream& _file, BYTE* _data, size_t _sizeInBytes)
+{
+	_file.write(reinterpret_cast<char*>(&_data), _sizeInBytes);
+	return _file.good();
+}
+
+bool WriteRLEToFile(std::ofstream& _file, BYTE* _data, size_t _sizeInBytes, char _bytePerPixel)
+{
+	const unsigned char max_chunk_length = 128;
+	unsigned long npixels				 = _sizeInBytes / _bytePerPixel;
+	unsigned long curpix				 = 0;
+	while(curpix < npixels)
+	{
+		unsigned long chunkstart = curpix * _bytePerPixel;
+		unsigned long curbyte	= curpix * _bytePerPixel;
+		unsigned char run_length = 1;
+		bool raw				 = true;
+
+		while(curpix + run_length < npixels && run_length < max_chunk_length)
+		{
+			bool succ_eq = true;
+			for(int channel = 0; succ_eq && channel < _bytePerPixel; channel++)
+			{
+				succ_eq = (_data[curbyte + channel] == _data[curbyte + channel + _bytePerPixel]);
+			}
+
+			curbyte += _bytePerPixel;
+			if(1 == run_length)
+			{
+				raw = !succ_eq;
+			}
+			if(raw && succ_eq)
+			{
+				run_length--;
+				break;
+			}
+			if(!raw && !succ_eq)
+			{
+				break;
+			}
+			run_length++;
+		}
+		curpix += run_length;
+
+		_file.put(raw ? run_length - 1 : run_length + 127);
+		if(false == _file.good())
+		{
+			fprintf_s(stderr, "Failed to write RLE image\n");
+			return false;
+		}
+
+		_file.write(reinterpret_cast<char*>(_data + chunkstart),
+					(raw ? run_length * _bytePerPixel : _bytePerPixel));
+		if(false == _file.good())
+		{
+			fprintf_s(stderr, "Failed to write RLE image\n");
+			return false;
 		}
 	}
 	return true;

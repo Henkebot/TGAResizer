@@ -27,7 +27,7 @@ public:
 		LARGE_INTEGER ElapsedMicroseconds;
 		ElapsedMicroseconds.QuadPart = m_EndingTime.QuadPart - m_StartingTime.QuadPart;
 
-		ElapsedMicroseconds.QuadPart *= 1000.0f;
+		ElapsedMicroseconds.QuadPart *= 1000;
 		float MSPerFrame = ((real32)ElapsedMicroseconds.QuadPart / (real32)m_Frequency.QuadPart);
 		m_StartingTime = m_EndingTime;
 
